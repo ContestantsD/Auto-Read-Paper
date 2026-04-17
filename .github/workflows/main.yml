@@ -52,12 +52,15 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          OPENAI_MAX_TOKENS: ${{ vars.OPENAI_MAX_TOKENS }}
           CUSTOM_CONFIG: ${{ vars.CUSTOM_CONFIG }}
         run: |
           # GitHub Actions exports empty string when vars.X is unset, which defeats
           # OmegaConf's ${oc.env:X,default} fallback. Re-default here.
           if [ -z "${OPENAI_MODEL:-}" ]; then export OPENAI_MODEL="gpt-4o-mini"; fi
+          if [ -z "${OPENAI_MAX_TOKENS:-}" ]; then export OPENAI_MAX_TOKENS="4096"; fi
           echo "Using OPENAI_MODEL=$OPENAI_MODEL"
+          echo "Using OPENAI_MAX_TOKENS=$OPENAI_MAX_TOKENS"
           if [ -n "$CUSTOM_CONFIG" ]; then
             printf "%b\n" "$CUSTOM_CONFIG" > config/custom.yaml
             echo "Wrote config/custom.yaml from CUSTOM_CONFIG repo variable."

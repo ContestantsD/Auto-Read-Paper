@@ -16,7 +16,7 @@ llm:
     key: ??? # OpenAI-compatible API key.
     base_url: ??? # OpenAI-compatible API base URL. Example: https://api.openai.com/v1
   generation_kwargs:
-    max_tokens: 16384
+    max_tokens: ${oc.decode:${oc.env:OPENAI_MAX_TOKENS,4096}} # Per-request output cap. Must be <= model context window. Many OpenAI-compatible providers cap at 8192 (e.g. DeepSeek, some Qwen tiers). Override via OPENAI_MAX_TOKENS repo variable.
     model: ??? # Example: gpt-4o-mini
   language: Chinese # Output language for the AI summary (TLDR).
 

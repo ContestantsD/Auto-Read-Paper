@@ -142,6 +142,7 @@ High-scoring papers are **never buried**:
    | `SEND_HOUR_BJ` | Beijing hour (0-23) at which the daily email is sent. Default `7`. | `7` |
    | `SEND_MINUTE_BJ` | Beijing minute (0-59). Optional, default `0`. Rounded down to the nearest 5-minute bucket — GitHub cron drifts ~5-15 min so finer precision isn't realistic. | `30` |
    | `OPENAI_MODEL` | LLM model id used for both scoring and the deep-read summary. Any model your `OPENAI_API_BASE` provider serves. Default `gpt-4o-mini`. | `gpt-4o-mini`, `deepseek-chat`, `Qwen/Qwen2.5-72B-Instruct` |
+   | `OPENAI_MAX_TOKENS` | Per-request output token cap. Default `4096`. **Must be ≤ your model's context window** — many OpenAI-compatible providers cap at `8192` (DeepSeek, some Qwen tiers). Setting this too high yields `400 Invalid max_tokens value`. | `4096`, `8192` |
    | `CUSTOM_CONFIG` | The full YAML configuration (see below). | *(multi-line YAML)* |
 
    ![custom_config](./assets/config_var.png)
@@ -166,6 +167,7 @@ High-scoring papers are **never buried**:
        base_url: ${oc.env:OPENAI_API_BASE}
      generation_kwargs:
        model: ${oc.env:OPENAI_MODEL,gpt-4o-mini}  # Picks up the OPENAI_MODEL repo variable
+       max_tokens: ${oc.decode:${oc.env:OPENAI_MAX_TOKENS,4096}}  # Per-request output cap; keep <= model context window
      language: Chinese
 
    source:
