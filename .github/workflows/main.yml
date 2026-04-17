@@ -1,0 +1,86 @@
+name: Send paper daily
+on:
+  workflow_dispatch:
+  schedule:
+    # Runs every 5 minutes. The job checks SEND_HOUR_BJ + SEND_MINUTE_BJ (Beijing time)
+    # and skips unless the current Beijing time falls in the same 5-minute bucket as the target.
+    # GitHub Actions cron drift is ~5-15 min, so 5-minute precision is the practical floor.
+    - cron: '*/5 * * * *'
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to commit state/score_history.json back to the repo.
+    steps:
+      - name: Check Beijing-time schedule
+        id: schedule_check
+        env:
+          SEND_HOUR_BJ: ${{ vars.SEND_HOUR_BJ }}
+          SEND_MINUTE_BJ: ${{ vars.SEND_MINUTE_BJ }}
+        run: |
+          target_hour="${SEND_HOUR_BJ:-7}"
+          target_minute="${SEND_MINUTE_BJ:-0}"
+          current_bj_hour=$(TZ=Asia/Shanghai date +%-H)
+          current_bj_minute=$(TZ=Asia/Shanghai date +%-M)
+          target_bucket=$(( target_minute / 5 * 5 ))
+          current_bucket=$(( current_bj_minute / 5 * 5 ))
+          echo "Beijing time now = ${current_bj_hour}:$(printf '%02d' "$current_bj_minute"), target = ${target_hour}:$(printf '%02d' "$target_minute") (bucket ${target_bucket}), trigger = ${{ github.event_name }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [ "$current_bj_hour" = "$target_hour" ] && [ "$current_bucket" = "$target_bucket" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping — Beijing ${current_bj_hour}:$(printf '%02d' "$current_bj_minute") not in target bucket ${target_hour}:$(printf '%02d' "$target_bucket")"
+          fi
+
+      - name: Checkout
+        if: steps.schedule_check.outputs.run == 'true'
+        uses: actions/checkout@v6
+
+      - name: Setup uv
+        if: steps.schedule_check.outputs.run == 'true'
+        uses: astral-sh/setup-uv@v7
+
+      - name: Run script
+        if: steps.schedule_check.outputs.run == 'true'
+        env:
+          SENDER: ${{ secrets.SENDER }}
+          RECEIVER: ${{ secrets.RECEIVER }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          CUSTOM_CONFIG: ${{ vars.CUSTOM_CONFIG }}
+        run: |
+          # GitHub Actions exports empty string when vars.X is unset, which defeats
+          # OmegaConf's ${oc.env:X,default} fallback. Re-default here.
+          if [ -z "${OPENAI_MODEL:-}" ]; then export OPENAI_MODEL="gpt-4o-mini"; fi
+          echo "Using OPENAI_MODEL=$OPENAI_MODEL"
+          if [ -n "$CUSTOM_CONFIG" ]; then
+            printf "%b\n" "$CUSTOM_CONFIG" > config/custom.yaml
+            echo "Wrote config/custom.yaml from CUSTOM_CONFIG repo variable."
+          else
+            echo "::warning::CUSTOM_CONFIG repo variable is empty — falling back to repo's config/custom.yaml."
+          fi
+          echo "Effective config/custom.yaml:"
+          cat config/custom.yaml
+          uv run src/auto_read_paper/main.py
+
+      - name: Commit rolling score history
+        if: steps.schedule_check.outputs.run == 'true' && success()
+        run: |
+          if [ ! -f state/score_history.json ]; then
+            echo "No state/score_history.json produced — nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/score_history.json
+          if git diff --cached --quiet; then
+            echo "score_history.json unchanged — skipping commit."
+          else
+            git commit -m "chore: update rolling score history [skip ci]"
+            git push
+          fi

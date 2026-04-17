@@ -1,0 +1,50 @@
+email:
+  sender: ${oc.env:SENDER}
+  receiver: ${oc.env:RECEIVER}
+  smtp_server: smtp.qq.com
+  smtp_port: 465
+  sender_password: ${oc.env:SENDER_PASSWORD}
+
+llm:
+  api:
+    key: ${oc.env:OPENAI_API_KEY}
+    base_url: ${oc.env:OPENAI_API_BASE}
+  generation_kwargs:
+    model: ${oc.env:OPENAI_MODEL,gpt-4o-mini}
+  language: Chinese
+
+source:
+  arxiv:
+    category: ["cs.RO", "cs.AI", "cs.LG", "cs.CV", "eess.SY"]
+    include_cross_list: true
+    keywords:
+      - "autonomous driving"
+      - "self-driving"
+      - "end-to-end driving"
+      - "automated vehicle"
+      - "motion planning"
+      - "trajectory planning"
+      - "trajectory prediction"
+      - "behavior prediction"
+      - "driving policy"
+      - "decision making"
+      - "lane change"
+      - "vehicle control"
+      - "reinforcement learning"
+      - "model predictive control"
+      - "residual policy"
+      - "imitation learning"
+      - "bird's eye view"
+      - "world model"
+      - "CARLA"
+      - "nuScenes"
+      - "nuPlan"
+
+executor:
+  debug: ${oc.env:DEBUG,null}
+  send_empty: false
+  max_paper_num: 10
+  source: ['arxiv']
+  # 'reader_reviewer' = 多智能体 (Reader 读文献 + Reviewer 全局评分，默认，token 效率高，筛选质量更好)
+  # 'keyword_llm'     = 单智能体 (逐篇 LLM 打分，简单直接)
+  reranker: reader_reviewer

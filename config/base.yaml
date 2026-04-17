@@ -1,0 +1,48 @@
+source:
+  arxiv:
+    category: null # arXiv categories to pull from RSS. Find abbreviations at https://arxiv.org/category_taxonomy. Example: ["cs.AI","cs.LG","cs.RO"]
+    include_cross_list: false # Whether to include cross-listed papers.
+    keywords: null # Case-insensitive substring filter applied to title+abstract. Example: ["reinforcement learning","residual policy"]
+
+email:
+  sender: ??? # SMTP sender account. Example: abc@qq.com
+  receiver: ??? # Inbox that receives the daily paper digest. Example: abc@outlook.com
+  smtp_server: ??? # SMTP server. Example: smtp.qq.com
+  smtp_port: ??? # Example: 465
+  sender_password: ??? # SMTP auth code (NOT your web login password).
+
+llm:
+  api:
+    key: ??? # OpenAI-compatible API key.
+    base_url: ??? # OpenAI-compatible API base URL. Example: https://api.openai.com/v1
+  generation_kwargs:
+    max_tokens: 16384
+    model: ??? # Example: gpt-4o-mini
+  language: Chinese # Output language for the AI summary (TLDR).
+
+reranker:
+  keyword_llm:
+    threshold: 0.0 # Minimum composite score (0-10) to keep a paper. 0 keeps all for Top-N selection.
+    weights: # Composite score = weighted average of LLM dimensions.
+      innovation: 0.4
+      relevance: 0.4
+      potential: 0.2
+    concurrency: 4 # Concurrent LLM scoring requests.
+    keyword_boost: 0.0 # Optional bonus score per extra keyword hit beyond the first.
+  reader_reviewer:
+    threshold: 0.0 # Drop papers scored below this by the Reviewer (0-10).
+    concurrency: 4 # Parallel Reader agents.
+    reader_max_input_tokens: 3000 # Truncate title+abstract+full_text fed to each Reader call.
+    reviewer_max_papers: 60 # Max candidates sent in the single Reviewer batch (token budget).
+
+history:
+  enabled: true # Roll scored-but-unsent papers forward so high-scoring backlog eventually surfaces.
+  path: state/score_history.json # Relative to repo root; committed back after each successful email.
+  retention_days: 7 # Drop papers older than this from the history pool.
+
+executor:
+  debug: false # Debug mode fetches only ~10 papers.
+  send_empty: false # Send the email even when nothing matched today.
+  max_paper_num: 10 # Maximum papers shown in the email (Top-N).
+  source: ['arxiv']
+  reranker: reader_reviewer # Options: 'reader_reviewer' (multi-agent, default, token-efficient & higher-quality) or 'keyword_llm' (single-agent, per-paper LLM scoring).
