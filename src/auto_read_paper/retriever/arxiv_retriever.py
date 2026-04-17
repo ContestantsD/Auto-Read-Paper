@@ -55,6 +55,7 @@ def _run_with_hard_timeout(
     timeout: float,
     operation: str,
     paper_title: str,
+    failure_log_level: str = "warning",
 ) -> T | None:
     start_methods = multiprocessing.get_all_start_methods()
     context = multiprocessing.get_context("fork" if "fork" in start_methods else start_methods[0])
@@ -80,7 +81,9 @@ def _run_with_hard_timeout(
     if status == "ok":
         return payload
 
-    logger.warning(f"{operation} failed for {paper_title}: {payload}")
+    getattr(logger, failure_log_level, logger.warning)(
+        f"{operation} failed for {paper_title}: {payload}"
+    )
     return None
 
 
@@ -303,11 +306,23 @@ class ArxivRetriever(BaseRetriever):
             except Exception as exc:
                 logger.debug(f"Affiliation on-demand fetch failed for {paper_id}: {exc}")
                 affiliations = None
+        # Redundant extraction chain so the LLM always has *some* text to read:
+        #   tar (tex source, richest) → HTML → PDF (pymupdf4llm, last resort).
+        # PDF-only arXiv submissions have no tex source, so they naturally fall
+        # through to the PDF path — that's the expected happy path for them.
         full_text = extract_text_from_tar(raw_paper)
+        source_used = "tar"
         if full_text is None:
             full_text = extract_text_from_html(raw_paper)
+            source_used = "html"
         if full_text is None:
             full_text = extract_text_from_pdf(raw_paper)
+            source_used = "pdf"
+        if full_text is None:
+            logger.warning(f"All extraction paths failed for {title}; LLM will read title+abstract only")
+            source_used = "abstract-only"
+        else:
+            logger.debug(f"Full text for {title} extracted via {source_used}")
         return Paper(
             source=self.name,
             title=title,
@@ -348,7 +363,7 @@ def extract_text_from_pdf(paper: ArxivResult) -> str | None:
 def extract_text_from_tar(paper: ArxivResult) -> str | None:
     source_url = paper.source_url()
     if source_url is None:
-        logger.warning(f"No source URL available for {paper.title}")
+        logger.debug(f"No source URL available for {paper.title} (PDF-only submission)")
         return None
     return _run_with_hard_timeout(
         _extract_text_from_tar_worker,
@@ -356,4 +371,5 @@ def extract_text_from_tar(paper: ArxivResult) -> str | None:
         timeout=TAR_EXTRACT_TIMEOUT,
         operation="Tar extraction",
         paper_title=paper.title,
+        failure_log_level="debug",
     )
