@@ -86,10 +86,10 @@ High-scoring papers are **never buried**:
 - 🌐 **Localized AI commentary** — three-section structured summary in the language you choose (`llm.language`); technical acronyms preserved
 - 📑 **Smart bilingual titles** — English + translation in `llm.language`; automatically collapses to single-line English when language is set to English
 - 🎨 **Beautiful email template** — colored tags, card layout, score badges
-- ⏰ **Beijing-time schedule** — a single repo variable `SEND_HOUR_BJ` controls send time
+- ⏰ **Minute-accurate scheduling** — driven by an external cron service (free, minute-precision) instead of GitHub's best-effort cron, with a per-day idempotency marker preventing double-sends
 - 🔍 **Keyword pre-filter** — papers not matching your keywords are dropped before any LLM call (saves tokens)
 - 💰 **Free infra on public repos** — GitHub Actions minutes are unlimited for public repos; you only pay the LLM provider for tokens
-- 🫀 **Heartbeat stability** — Keep-Alive workflow prevents GitHub from pausing cron after 60 idle days; history fallback + arXiv heartbeat keeps the daily pulse alive even on quiet days
+- 🫀 **Heartbeat stability** — external-scheduler trigger sidesteps GitHub's 60-day idle-schedule pause entirely; history fallback + arXiv heartbeat keeps the daily pulse alive even on quiet days
 - 🔧 **Hydra + OmegaConf** — every behavior is configurable via YAML with hot env-var interpolation
 
 ---
@@ -105,7 +105,7 @@ High-scoring papers are **never buried**:
 
    > **About Secrets vs Variables.** GitHub Actions exposes two kinds of repo-level configuration:
    > - **Secrets** (`${{ secrets.X }}`): encrypted, masked as `***` in logs, never readable after save. Use these for **anything sensitive** — passwords, API keys, SMTP auth codes.
-   > - **Variables** (`${{ vars.X }}`): plain-text, visible in logs, editable any time. Use these for **non-sensitive config** — model id, schedule hour, feature toggles.
+   > - **Variables** (`${{ vars.X }}`): plain-text, visible in logs, editable any time. Use these for **non-sensitive config** — model id, token budget, feature toggles.
    >
    > Both live under repo **Settings → Secrets and variables → Actions** but in *separate tabs*. Neither is inherited when someone forks — every fork must set its own.
 
@@ -137,10 +137,10 @@ High-scoring papers are **never buried**:
 3. **Set GitHub Action repository variables** (Variables tab, *not* Secrets).
    ![vars](./assets/repo_var.png)
 
+   > **Where does the daily send time live?** Not here — the workflow has no built-in schedule, it only runs when an external service (cron-job.org) invokes it. Send time is set in the cron-job.org dashboard (step 5 below), so this variables table contains **no time-related knobs**.
+
    | Variable | Description | Example |
    | :--- | :--- | :--- |
-   | `SEND_HOUR_BJ` | Beijing hour (0-23) at which the daily email is sent. Default `9`. **Must fall inside the cron window defined in [`.github/workflows/main.yml`](.github/workflows/main.yml) — by default Beijing 07:00–11:59. If you want a target outside this window (e.g. 20:00), also edit the UTC `cron:` line in the workflow so it covers `target ± 1h`.** | `9` |
-   | `SEND_MINUTE_BJ` | Beijing minute (0-59). Optional, default `30`. The job enforces a ±60 min window around `SEND_HOUR_BJ:SEND_MINUTE_BJ` and uses an idempotent "already sent today" guard, so at most one email is sent per Beijing day even though GitHub may fire the cron many times. | `30` |
    | `OPENAI_MODEL` | LLM model id used for both scoring and the deep-read summary. Any model your `OPENAI_API_BASE` provider serves. Default `gpt-4o-mini`. | `gpt-4o-mini`, `deepseek-chat`, `Qwen/Qwen2.5-72B-Instruct` |
    | `OPENAI_MAX_TOKENS` | Per-request output token cap. Default `4096`. **Must be ≤ your model's context window** — many OpenAI-compatible providers cap at `8192` (DeepSeek, some Qwen tiers). Setting this too high yields `400 Invalid max_tokens value`. | `4096`, `8192` |
    | `CUSTOM_CONFIG` | The full YAML configuration (see below). **Must be edited to match your own research keywords / categories / language — not optional.** | *(multi-line YAML)* |
@@ -205,68 +205,42 @@ High-scoring papers are **never buried**:
 5. **Once `Test` passes, manually trigger `Send paper daily` for a live dry-run.** Check the workflow log and your inbox.
    ![trigger](./assets/trigger.png)
 
-   After this manual run, the workflow also runs automatically. The cron is scoped to a ~5h UTC window corresponding to **Beijing 07:00–11:59** and fires every 15 minutes inside it (≈20 attempts per day). Each attempt short-circuits unless **current Beijing time is within ±60 minutes of `SEND_HOUR_BJ`:`SEND_MINUTE_BJ`** (default 09:30) and today's email has not yet been sent — so at most one email per Beijing day, no matter how many times GitHub actually fires. Change `SEND_HOUR_BJ` / `SEND_MINUTE_BJ` anytime to reschedule within the default window; **only if you move the target outside 07:00–11:59 Beijing time do you also need to edit the UTC `cron:` line in [`.github/workflows/main.yml`](.github/workflows/main.yml)** so the window still covers `target ± 1h`.
+6. **Set up daily scheduling via [cron-job.org](https://cron-job.org)** — this is how the workflow knows when to run. The repo no longer ships a `schedule:` cron (GitHub's built-in cron is best-effort and drifts 5–15 min), so until you complete this step the workflow will only run on manual clicks.
 
-   > **Manual re-send:** If you need to force-send today's digest a second time (e.g. after debugging), go to the **Actions → Send paper daily → Run workflow** menu, tick **`force`**, and Run. With `force=true` the run bypasses both the ±60 min window and the "already sent today" guard, and it does **not** overwrite the day's sent-marker — so the real scheduled send still fires as normal. External schedulers like cron-job.org (see 5a below) must leave `force=false`, otherwise every retry would re-send.
-
-5a. **(Optional but recommended) Precise scheduling via cron-job.org.** GitHub Actions' built-in cron is best-effort and can drift 5–15 minutes, occasionally missing low-traffic windows entirely. For minute-accurate delivery, have an external scheduler invoke the workflow directly:
-
-   1. **Generate a GitHub [fine-grained PAT](https://github.com/settings/tokens?type=beta)** scoped to **only your fork**, with **Actions: Read and write** permission. Copy the `github_pat_...` string.
+   1. **Generate a GitHub [fine-grained PAT](https://github.com/settings/tokens?type=beta)** scoped to **only your fork of this repo**, with **Actions: Read and write** permission (nothing else). Copy the `github_pat_...` string somewhere safe — GitHub only shows it once.
    2. **Register at [cron-job.org](https://cron-job.org)** (free, no credit card), then **Create cronjob**:
       - **Title:** `Auto-Read-Paper daily`
-      - **URL:** `https://api.github.com/repos/<your-username>/Auto-Read-Paper/actions/workflows/main.yml/dispatches`
-      - **Schedule tab → Advanced:** pick your exact Beijing time (the site has an `Asia/Shanghai` timezone setting). Example for 10:00: minute `0`, hour `10`, every day.
+      - **URL:** `https://api.github.com/repos/<your-github-username>/Auto-Read-Paper/actions/workflows/main.yml/dispatches`
+        > Replace `<your-github-username>` with your own username (e.g. `alice123`). If you renamed the forked repo, also update `Auto-Read-Paper` to match.
+      - **Schedule tab → Advanced:** set timezone to `Asia/Shanghai`, then pick your exact Beijing send time. Example for 10:00 every day: minute `0`, hour `10`, days `*`, months `*`, weekdays `*`.
       - **Advanced tab → Request method:** `POST`
       - **Advanced tab → Request headers:** add these two:
         - `Authorization: Bearer <your github_pat_... token>`
         - `Accept: application/vnd.github+json`
-      - **Advanced tab → Request body:** `{"ref":"main"}` — do **not** include `"inputs":{"force":true}`; let `force` default to false so the idempotency marker still protects against double-sends.
-   3. **Save.** cron-job.org's dashboard becomes your single source of truth for send time — change the schedule there, no repo edit needed.
+      - **Advanced tab → Request body:** `{"ref":"main"}`
+        > Do **not** add `"inputs":{"force":true}` here. Leaving `force` at its default (false) keeps the "already sent today" guard active, so an accidental cron-job.org retry cannot double-send.
+   3. **Save and enable.** That's it — **the cron-job.org dashboard is now the single source of truth for your send time.** To reschedule, change it there; no repo edit is ever needed.
 
-   **Where does each setting live now?** This is easy to get confused by; the cheat sheet:
+   > **Need to force-resend today?** Go to GitHub **Actions → Send paper daily → Run workflow**, tick the **`force`** checkbox, and click Run. `force=true` bypasses the idempotency marker (letting you send a second time the same day for debugging) and it does **not** overwrite the day's canonical sent-marker, so a later automated run from cron-job.org — if it hasn't happened yet — will still go through normally.
 
-   | Knob | Lives in | What it controls |
-   | :--- | :--- | :--- |
-   | **Primary send time** | cron-job.org dashboard | The exact moment the workflow is invoked each day (minute precision) |
-   | **Backup window** | `SEND_HOUR_BJ` / `SEND_MINUTE_BJ` repo variables | Center of the ±60 min window used by GitHub's *fallback* cron, in case cron-job.org is down. Should match your cron-job.org time |
-   | **Fallback cron hours** | `.github/workflows/main.yml` `cron:` line | UTC hour range GitHub's fallback cron scans. Only edit if the backup window (above) moves outside Beijing 07:00–11:59 |
+7. **Keep it running 365 days.** The daily send is triggered externally by cron-job.org, so GitHub's **60-day idle-schedule pause no longer affects it** — cron-job.org will keep POSTing regardless of whether this repo has recent commits. The bundled `Keep Alive` workflow is therefore no longer strictly necessary; it's left enabled as a harmless belt-and-braces (≈12 runs/year, negligible quota impact) and still protects any *other* schedule-based workflow you might add later.
+   ![keep](./assets/keep.png)
 
-   The GitHub cron in [`.github/workflows/main.yml`](.github/workflows/main.yml) is kept on purpose as a safety net: if cron-job.org fails to fire (account suspension, service outage), GitHub's own cron will still attempt a send within ±60 min of `SEND_HOUR_BJ`:`SEND_MINUTE_BJ`, and the shared sent-marker prevents duplicates either way.
+   > **Actions minute quota.** See the next subsection for the full breakdown. TL;DR: **public forks = unlimited and free forever**; private forks now use ~1 min/day (30 min/month), easily inside the Free plan's 2000 min/month cap.
 
-6. **Keep it running 365 days.** Two GitHub-side issues can silently kill the daily digest; both are handled by default, but you should know what's happening:
-
-   - **60-day idle pause.** GitHub disables schedule triggers on any repo with no recent commits or activity. The bundled `Keep Alive` workflow touches `keep-alive.txt` every 30 days specifically to prevent this. Leave it enabled and no action is ever needed.
-     ![keep](./assets/keep.png)
-
-   - **Actions minute quota.** See the next subsection for the full breakdown. TL;DR: **public forks = unlimited and free forever**; private forks need a stricter cron.
-
-7. **(Optional) Subscribe to failure emails.** Click the repo's **Watch** button → *Custom* → tick **Actions** — GitHub will email you only when a workflow fails, so you hear about an expired API key or SMTP rejection within minutes instead of noticing a silent empty inbox days later.
+8. **(Optional) Subscribe to failure emails.** Click the repo's **Watch** button → *Custom* → tick **Actions** — GitHub will email you only when a workflow fails, so you hear about an expired API key or SMTP rejection within minutes instead of noticing a silent empty inbox days later.
    ![subscribe](./assets/subscribe.png)
 
 ### ⚖️ Will this burn through my GitHub Actions quota?
 
-Short answer: **No — as long as your fork is a public repo, both workflows (`Send paper daily` + `Keep Alive`) run free forever, every day of the year.** This is the intended deployment target.
-
-The details GitHub actually bills on:
+Short answer: **No — both public and private forks run comfortably inside their free tiers year-round.** Since scheduling moved to cron-job.org (see step 6), GitHub Actions is only invoked **once per day** (plus rare manual dispatches), so the entire quota concern largely disappears.
 
 | Your fork is… | Actions minutes | Storage | Verdict |
 | :--- | :--- | :--- | :--- |
 | **Public** (default when you fork) | **Unlimited & free** | Unlimited & free | ✅ 365-day operation, zero infra cost. Just keep the LLM API key funded. |
-| **Private** | 2000 min/month free (Free plan), 3000 (Pro) | 500 MB / 1 GB | ⚠ Default `*/5 * * * *` cron = ~8640 wakeups/month; even though most skip in under 10 s, GitHub rounds every invocation up to **1 billed minute**, so you will blow the 2000-min cap by mid-month. Switch the cron (table below). |
+| **Private** | 2000 min/month free (Free plan), 3000 (Pro) | 500 MB / 1 GB | ✅ ~1 min/day × 30 days ≈ **30 min/month**, well inside the 2000-min Free cap. |
 
-The `Keep Alive` workflow runs once every 30 days — ~12 invocations/year — so its cost is negligible on any plan. The quota pressure is entirely from `Send paper daily`'s cron.
-
-**Cron presets for private forks** — edit `.github/workflows/main.yml` and change the `- cron:` line. The in-job Beijing-time bucket check still decides whether to actually send, so narrowing the cron only reduces how often the runner wakes up.
-
-| Cron | Wakeups/month | Est. billed min/month | Use when |
-| :--- | :--- | :--- | :--- |
-| `'*/5 * * * *'` (default) | ~8640 | ~8640 ⚠ way over private quota | public repo |
-| `'*/15 * * * *'` | ~2880 | ~2880 ⚠ still over | marginal |
-| `'*/30 * * * *'` | ~1440 | ~1440 ✅ | private, 30-min send precision |
-| `'*/5 22-23,0-2 * * *'` | ~1800 | ~1800 ✅ | private, keep 5-min precision but only wake during BJ 06–10 window |
-| `'0 23 * * *'` (single daily fire) | ~30 | ~30 ✅ | private, one shot at BJ 07:00 sharp (tolerant to cron drift) |
-
-If you fork to a public repo — which is what we recommend — ignore this table and keep the default cron.
+`Keep Alive` contributes another ~12 invocations/year (negligible). cron-job.org itself is free with no per-call limit on their free tier.
 
 ### Full configuration reference
 
@@ -312,7 +286,8 @@ arXiv RSS → keyword filter → multi-agent rerank → history merge → Top-N 
 
 - arXiv RSS is the only source. Google Scholar has no stable API and would not survive on GitHub Actions runners.
 - The LLM scoring is only as good as the prompt + model; for niche domains, expect some noise. Raise `max_paper_num` or tune `weights` to taste.
-- Runs **free and unmetered on a public fork**; private forks need a stricter cron — see ["Will this burn through my GitHub Actions quota?"](#-will-this-burn-through-my-github-actions-quota) above.
+- Runs **free and unmetered on a public fork**; private forks use ~30 Actions min/month (well inside the Free tier's 2000). See ["Will this burn through my GitHub Actions quota?"](#-will-this-burn-through-my-github-actions-quota) above.
+- Daily scheduling requires a free external account at [cron-job.org](https://cron-job.org) (step 6 of the setup). The workflow no longer embeds a GitHub `schedule:` cron because GitHub's built-in cron drifts 5–15 min and frequently drops fires.
 
 ---
 
