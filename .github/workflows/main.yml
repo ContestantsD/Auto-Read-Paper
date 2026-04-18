@@ -14,6 +14,20 @@ name: Send paper daily
 
 on:
   workflow_dispatch:
+    inputs:
+      skip_dedup:
+        description: "Force a send even if the rendered email is identical to the previous one (bypasses content-hash dedup). Leave unchecked for normal runs; only useful when re-testing SMTP/template with the same candidate pool."
+        type: boolean
+        default: false
+
+# Belt and suspenders: only one run of this workflow can be active at a time.
+# If a second trigger fires while one is running, the new one queues behind
+# the first (cancel-in-progress: false) rather than executing in parallel —
+# which would race on the score_history.json cache and could produce the
+# duplicate-email symptom we saw before.
+concurrency:
+  group: send-paper-daily-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   send-digest:
@@ -47,6 +61,7 @@ jobs:
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           OPENAI_MAX_TOKENS: ${{ vars.OPENAI_MAX_TOKENS }}
           CUSTOM_CONFIG: ${{ vars.CUSTOM_CONFIG }}
+          SKIP_DEDUP: ${{ inputs.skip_dedup && '1' || '' }}
         run: |
           # GitHub Actions exports empty string when vars.X is unset, which defeats
           # OmegaConf's ${oc.env:X,default} fallback. Re-default here.

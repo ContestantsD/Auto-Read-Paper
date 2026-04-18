@@ -77,28 +77,47 @@ class ScoreHistory:
         self.path = Path(path)
         self.retention_days = int(retention_days)
         self.entries: list[dict] = []
+        # Guards against duplicate sends: if today's rendered HTML hashes to the
+        # same value as the last sent email, we skip the send. Catches cache
+        # restore failures, concurrent runs, and mail provider replays.
+        self.last_sent_email: dict = {}
 
     def load(self) -> None:
         if not self.path.exists():
             logger.info(f"No history file at {self.path}; starting fresh")
             self.entries = []
+            self.last_sent_email = {}
             return
         try:
             with self.path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
             self.entries = list(data.get("papers", []))
+            self.last_sent_email = dict(data.get("last_sent_email") or {})
             logger.info(
                 f"Loaded {len(self.entries)} entries from {self.path}"
             )
         except Exception as e:
             logger.warning(f"Failed to load history {self.path}: {e}; starting fresh")
             self.entries = []
+            self.last_sent_email = {}
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("w", encoding="utf-8") as f:
-            json.dump({"papers": self.entries}, f, ensure_ascii=False, indent=2)
+            json.dump(
+                {"papers": self.entries, "last_sent_email": self.last_sent_email},
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
         logger.info(f"Saved {len(self.entries)} entries to {self.path}")
+
+    def is_duplicate_of_last_send(self, content_hash: str) -> bool:
+        """True iff the last recorded send has the same content hash (any date)."""
+        return bool(self.last_sent_email) and self.last_sent_email.get("hash") == content_hash
+
+    def record_sent_email(self, content_hash: str, today: str) -> None:
+        self.last_sent_email = {"date": today, "hash": content_hash}
 
     def trim(self) -> None:
         cutoff = (

@@ -1,3 +1,6 @@
+import hashlib
+import os
+
 from loguru import logger
 from omegaconf import DictConfig
 from .retriever import get_retriever_cls
@@ -139,14 +142,45 @@ class Executor:
                 if lang != "english" and not getattr(p, "title_zh", None):
                     p.generate_title_zh(self.openai_client, self.config.llm)
 
-        logger.info("Sending email...")
         lang = str(self.config.llm.get("language", "Chinese"))
         email_content = render_email(top_papers, lang)
-        send_email(self.config, email_content)
+        content_hash = hashlib.sha256(email_content.encode("utf-8")).hexdigest()
+
+        # Content-hash dedup. If the last successfully-sent email hashes to the
+        # same value, this is a duplicate trigger — skip the SMTP send. Catches
+        # overlapping workflow runs, stale cache restores, and mail-provider
+        # replays. Hash covers every visible paper + summary, so a genuine new
+        # candidate pool always differs and goes through.
+        #
+        # Escape hatch: set SKIP_DEDUP=1 to bypass (useful when re-sending the
+        # same content for SMTP / rendering / template testing).
+        skip_dedup = os.environ.get("SKIP_DEDUP", "").strip().lower() in ("1", "true", "yes")
+        if (
+            not skip_dedup
+            and self.history is not None
+            and self.history.is_duplicate_of_last_send(content_hash)
+        ):
+            last = self.history.last_sent_email
+            logger.warning(
+                f"Skipping duplicate send — identical email already sent on "
+                f"{last.get('date')} (hash {content_hash[:12]}...). "
+                f"This typically means two triggers fired for the same candidate "
+                f"pool. Set SKIP_DEDUP=1 to force resend for debugging."
+            )
+            return
+        if skip_dedup and self.history is not None and self.history.is_duplicate_of_last_send(content_hash):
+            logger.warning(
+                f"SKIP_DEDUP=1 set — sending despite identical-content hash "
+                f"({content_hash[:12]}...) as last send."
+            )
+
+        logger.info("Sending email...")
+        send_email(self.config, email_content, content_hash=content_hash)
         logger.info("Email sent successfully")
 
         # Only mark as sent AFTER SMTP succeeds — if the send fails, the papers
         # stay in the unsent pool and get another shot tomorrow.
         if self.history is not None:
+            self.history.record_sent_email(content_hash, today)
             self.history.mark_sent(top_papers, today)
             self.history.save()

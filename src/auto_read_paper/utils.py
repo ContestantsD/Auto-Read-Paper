@@ -139,12 +139,13 @@ def glob_match(path:str, pattern:str) -> bool:
     re_pattern = glob.translate(pattern,recursive=True)
     return re.match(re_pattern, path) is not None
 
-def send_email(config:DictConfig, html:str):
+def send_email(config: DictConfig, html: str, content_hash: str | None = None):
     sender = config.email.sender
     receiver = config.email.receiver
     password = config.email.sender_password
     smtp_server = config.email.smtp_server
-    smtp_port = config.email.smtp_port
+    smtp_port = int(config.email.smtp_port)
+
     def _format_addr(s):
         name, addr = parseaddr(s)
         return formataddr((Header(name, 'utf-8').encode(), addr))
@@ -155,17 +156,38 @@ def send_email(config:DictConfig, html:str):
     today = datetime.datetime.now().strftime('%Y/%m/%d')
     msg['Subject'] = Header(f'Daily arXiv {today}', 'utf-8').encode()
 
-    try:
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()
-    except Exception as e:
-        logger.debug(f"Failed to use TLS. {e}\nTry to use SSL.")
+    # Deterministic Message-ID from content hash (when provided). If an
+    # upstream retry somehow submits the same mail twice, receiving servers
+    # that honor RFC 5321 dedup will collapse them to a single inbox entry.
+    if content_hash:
         try:
-            server = smtplib.SMTP_SSL(smtp_server, smtp_port)
-        except Exception as e:
-            logger.debug(f"Failed to use SSL. {e}\nTry to use plain text.")
-            server = smtplib.SMTP(smtp_server, smtp_port)
+            sender_domain = sender.split("@", 1)[1]
+        except IndexError:
+            sender_domain = "auto-read-paper.local"
+        msg['Message-ID'] = f"<{content_hash}@{sender_domain}>"
 
-    server.login(sender, password)
-    server.sendmail(sender, [receiver], msg.as_string())
-    server.quit()
+    # Choose SMTP transport by port instead of the legacy try-TLS-then-fallback
+    # chain, which used to leave stray connections behind when the first
+    # attempt partially succeeded.
+    #   465         → implicit TLS (SMTP_SSL)
+    #   587 / 25    → plain connect + STARTTLS upgrade
+    if smtp_port == 465:
+        server = smtplib.SMTP_SSL(smtp_server, smtp_port)
+    else:
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        try:
+            server.starttls()
+        except smtplib.SMTPNotSupportedError:
+            logger.warning(
+                f"SMTP server {smtp_server}:{smtp_port} does not support STARTTLS; "
+                f"continuing on plaintext (credentials will be transmitted in clear)."
+            )
+
+    try:
+        server.login(sender, password)
+        server.sendmail(sender, [receiver], msg.as_string())
+    finally:
+        try:
+            server.quit()
+        except Exception:
+            pass
