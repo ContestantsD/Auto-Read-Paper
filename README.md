@@ -207,6 +207,32 @@ High-scoring papers are **never buried**:
 
    After this manual run, the workflow also runs automatically. The cron is scoped to a ~5h UTC window corresponding to **Beijing 07:00–11:59** and fires every 15 minutes inside it (≈20 attempts per day). Each attempt short-circuits unless **current Beijing time is within ±60 minutes of `SEND_HOUR_BJ`:`SEND_MINUTE_BJ`** (default 09:30) and today's email has not yet been sent — so at most one email per Beijing day, no matter how many times GitHub actually fires. Change `SEND_HOUR_BJ` / `SEND_MINUTE_BJ` anytime to reschedule within the default window; **only if you move the target outside 07:00–11:59 Beijing time do you also need to edit the UTC `cron:` line in [`.github/workflows/main.yml`](.github/workflows/main.yml)** so the window still covers `target ± 1h`.
 
+   > **Manual re-send:** If you need to force-send today's digest a second time (e.g. after debugging), go to the **Actions → Send paper daily → Run workflow** menu, tick **`force`**, and Run. With `force=true` the run bypasses both the ±60 min window and the "already sent today" guard, and it does **not** overwrite the day's sent-marker — so the real scheduled send still fires as normal. External schedulers like cron-job.org (see 5a below) must leave `force=false`, otherwise every retry would re-send.
+
+5a. **(Optional but recommended) Precise scheduling via cron-job.org.** GitHub Actions' built-in cron is best-effort and can drift 5–15 minutes, occasionally missing low-traffic windows entirely. For minute-accurate delivery, have an external scheduler invoke the workflow directly:
+
+   1. **Generate a GitHub [fine-grained PAT](https://github.com/settings/tokens?type=beta)** scoped to **only your fork**, with **Actions: Read and write** permission. Copy the `github_pat_...` string.
+   2. **Register at [cron-job.org](https://cron-job.org)** (free, no credit card), then **Create cronjob**:
+      - **Title:** `Auto-Read-Paper daily`
+      - **URL:** `https://api.github.com/repos/<your-username>/Auto-Read-Paper/actions/workflows/main.yml/dispatches`
+      - **Schedule tab → Advanced:** pick your exact Beijing time (the site has an `Asia/Shanghai` timezone setting). Example for 10:00: minute `0`, hour `10`, every day.
+      - **Advanced tab → Request method:** `POST`
+      - **Advanced tab → Request headers:** add these two:
+        - `Authorization: Bearer <your github_pat_... token>`
+        - `Accept: application/vnd.github+json`
+      - **Advanced tab → Request body:** `{"ref":"main"}` — do **not** include `"inputs":{"force":true}`; let `force` default to false so the idempotency marker still protects against double-sends.
+   3. **Save.** cron-job.org's dashboard becomes your single source of truth for send time — change the schedule there, no repo edit needed.
+
+   **Where does each setting live now?** This is easy to get confused by; the cheat sheet:
+
+   | Knob | Lives in | What it controls |
+   | :--- | :--- | :--- |
+   | **Primary send time** | cron-job.org dashboard | The exact moment the workflow is invoked each day (minute precision) |
+   | **Backup window** | `SEND_HOUR_BJ` / `SEND_MINUTE_BJ` repo variables | Center of the ±60 min window used by GitHub's *fallback* cron, in case cron-job.org is down. Should match your cron-job.org time |
+   | **Fallback cron hours** | `.github/workflows/main.yml` `cron:` line | UTC hour range GitHub's fallback cron scans. Only edit if the backup window (above) moves outside Beijing 07:00–11:59 |
+
+   The GitHub cron in [`.github/workflows/main.yml`](.github/workflows/main.yml) is kept on purpose as a safety net: if cron-job.org fails to fire (account suspension, service outage), GitHub's own cron will still attempt a send within ±60 min of `SEND_HOUR_BJ`:`SEND_MINUTE_BJ`, and the shared sent-marker prevents duplicates either way.
+
 6. **Keep it running 365 days.** Two GitHub-side issues can silently kill the daily digest; both are handled by default, but you should know what's happening:
 
    - **60-day idle pause.** GitHub disables schedule triggers on any repo with no recent commits or activity. The bundled `Keep Alive` workflow touches `keep-alive.txt` every 30 days specifically to prevent this. Leave it enabled and no action is ever needed.

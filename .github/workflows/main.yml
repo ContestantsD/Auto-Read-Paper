@@ -1,6 +1,11 @@
 name: Send paper daily
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Force send even if today's digest was already sent (bypasses the idempotency marker). Leave unchecked for normal runs — external schedulers like cron-job.org should NOT set this."
+        type: boolean
+        default: false
   schedule:
     # Every 15 min during UTC 23:00–03:59 (= Beijing 07:00–11:59), a ~5h window
     # generously surrounding the typical SEND_HOUR_BJ=9:30 target. The job then
@@ -33,6 +38,9 @@ jobs:
           abs_diff=${diff#-}
           echo "bj_date=${bj_date}" >> "$GITHUB_OUTPUT"
           echo "Beijing time now = ${current_bj_hour}:$(printf '%02d' "$current_bj_minute"), target = ${target_hour}:$(printf '%02d' "$target_minute"), |diff| = ${abs_diff} min, trigger = ${{ github.event_name }}"
+          # workflow_dispatch bypasses the window check: external schedulers
+          # (cron-job.org etc.) already decided when to fire, and manual runs
+          # should work any time of day.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "in_window=true" >> "$GITHUB_OUTPUT"
           elif [ "$abs_diff" -le 60 ]; then
@@ -56,12 +64,23 @@ jobs:
 
       - name: Decide whether to run
         id: decide
+        env:
+          FORCE: ${{ inputs.force }}
         run: |
-          if [ "${{ steps.schedule_check.outputs.in_window }}" != "true" ]; then
+          # Priority 1: manual force-run (UI dispatch with force=true) always runs.
+          # Priority 2: outside target window (schedule only) → skip.
+          # Priority 3: already sent today (marker cache-hit) → skip. Applies to
+          #   both schedule AND workflow_dispatch without force, so a stray
+          #   cron-job.org retry does NOT double-send.
+          # Otherwise run.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${FORCE}" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Forced run (workflow_dispatch with force=true) — bypassing window and idempotency checks"
+          elif [ "${{ steps.schedule_check.outputs.in_window }}" != "true" ]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
-          elif [ "${{ steps.sent_check.outputs.cache-hit }}" = "true" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+          elif [ "${{ steps.sent_check.outputs.cache-hit }}" = "true" ]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping — already sent for Beijing date ${{ steps.schedule_check.outputs.bj_date }}"
+            echo "::notice::Skipping — already sent for Beijing date ${{ steps.schedule_check.outputs.bj_date }}. Trigger workflow_dispatch with force=true to override."
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
@@ -129,15 +148,19 @@ jobs:
       # Mark today's Beijing date as sent so later triggers on the same day
       # short-circuit at the idempotency guard above. Cache entries are immutable
       # by key, so we only write once per Beijing date.
+      #
+      # Skipped when inputs.force=true: a forced run is ad-hoc (testing / manual
+      # resend outside window) and must NOT overwrite the day's canonical send
+      # state, otherwise the real scheduled 10:00 run would be suppressed.
       - name: Write sent marker
-        if: steps.decide.outputs.run == 'true' && success() && steps.sent_check.outputs.cache-hit != 'true'
+        if: steps.decide.outputs.run == 'true' && success() && steps.sent_check.outputs.cache-hit != 'true' && inputs.force != true
         run: |
           mkdir -p state
           TZ=Asia/Shanghai date --iso-8601=seconds > state/.sent-marker
           echo "Wrote state/.sent-marker for Beijing date ${{ steps.schedule_check.outputs.bj_date }}"
 
       - name: Save sent marker
-        if: steps.decide.outputs.run == 'true' && success() && steps.sent_check.outputs.cache-hit != 'true'
+        if: steps.decide.outputs.run == 'true' && success() && steps.sent_check.outputs.cache-hit != 'true' && inputs.force != true
         uses: actions/cache/save@v4
         with:
           path: state/.sent-marker
