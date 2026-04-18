@@ -207,26 +207,45 @@ High-scoring papers are **never buried**:
 5. **Once `Test` passes, manually trigger `Send paper daily` for a live dry-run.** Check the workflow log and your inbox.
    ![trigger](./assets/trigger.png)
 
-6. **Set up daily scheduling via [cron-job.org](https://cron-job.org)** — this is how the workflow knows when to run. The repo no longer ships a `schedule:` cron (GitHub's built-in cron is best-effort and drifts 5–15 min), so until you complete this step the workflow will only run on manual clicks.
+6. **Set up daily scheduling via [cron-job.org](https://cron-job.org)** — this is how the workflow knows when to run. The repo no longer ships a `schedule:` cron (GitHub's built-in cron is best-effort and drifts 5–15 min), so until you complete this step the workflow will only run when you click *Run workflow* manually.
 
-   1. **Generate a GitHub [fine-grained PAT](https://github.com/settings/tokens?type=beta)** scoped to **only your fork of this repo**, with **Actions: Read and write** permission (nothing else). Copy the `github_pat_...` string somewhere safe — GitHub only shows it once.
-   2. **Register at [cron-job.org](https://cron-job.org)** (free, no credit card), then **Create cronjob**:
-      - **Title:** `Auto-Read-Paper daily`
-      - **URL:** `https://api.github.com/repos/<your-github-username>/Auto-Read-Paper/actions/workflows/main.yml/dispatches`
-        > Replace `<your-github-username>` with your own username (e.g. `alice123`). If you renamed the forked repo, also update `Auto-Read-Paper` to match.
-      - **Schedule tab → Advanced:** set timezone to `Asia/Shanghai`, then pick your exact Beijing send time. Example for 10:00 every day: minute `0`, hour `10`, days `*`, months `*`, weekdays `*`.
-      - **Advanced tab → Request method:** `POST`
-      - **Advanced tab → Request headers:** add these two:
-        - `Authorization: Bearer <your github_pat_... token>`
-        - `Accept: application/vnd.github+json`
-      - **Advanced tab → Request body:** `{"ref":"main"}`
-        > Do **not** add `"inputs":{"force":true}` here. Leaving `force` at its default (false) keeps the "already sent today" guard active, so an accidental cron-job.org retry cannot double-send.
+   **6.1 Register a cron-job.org account.** Go to [cron-job.org](https://cron-job.org) → *Signup* → verify email → log in. It's free and requires no credit card. After logging in, open your **Account → Settings** and set the **timezone** to `Asia/Shanghai` (or whichever timezone you want your daily send time expressed in) — this is what the schedule picker interprets "every day at HH:MM" in.
 
-      ![cron create](./assets/cron_create.png)
-      ![cron config](./assets/cron_config.png)
-   3. **Save and enable.** That's it — **the cron-job.org dashboard is now the single source of truth for your send time.** To reschedule, change it there; no repo edit is ever needed.
+   **6.2 Generate a GitHub Personal Access Token (PAT).** Go to **GitHub → Settings → Developer settings → [Fine-grained personal access tokens](https://github.com/settings/tokens?type=beta) → Generate new token**:
+   - **Resource owner:** yourself.
+   - **Repository access:** *Only select repositories* → pick **only your fork of `Auto-Read-Paper`** (nothing else).
+   - **Repository permissions → Actions:** set to **Read and write**. Leave everything else on *No access*.
+   - **Expiration:** 1 year (or *No expiration* if your org allows — otherwise set a calendar reminder to rotate).
+   - Click **Generate token** and copy the `github_pat_...` string. **GitHub only shows it once** — if you lose it, you'll have to generate a new one.
 
-   > **Need to force-resend today?** Go to GitHub **Actions → Send paper daily → Run workflow**, tick the **`force`** checkbox, and click Run. `force=true` bypasses the idempotency marker (letting you send a second time the same day for debugging) and it does **not** overwrite the day's canonical sent-marker, so a later automated run from cron-job.org — if it hasn't happened yet — will still go through normally.
+   **6.3 Create the cron job — click "CREATE CRONJOB" on the dashboard.**
+
+   ![cron create](./assets/cron_create.png)
+
+   **6.4 Fill in the Common tab** (screenshot below is exactly what it should look like):
+
+   ![cron config](./assets/cron_config.png)
+
+   - **Title:** anything descriptive, e.g. `Auto-Read-Paper daily` or `Time trigger`.
+   - **URL:** `https://api.github.com/repos/<your-github-username>/Auto-Read-Paper/actions/workflows/main.yml/dispatches`
+     > **⚠ Replace `<your-github-username>`** with *your own* GitHub username — the screenshot above shows `xcc6219` (the upstream repo owner) in the red box as an example; if you leave that value in, your POST will hit someone else's repo and silently fail with a 404. If you also renamed the forked repo, update the `Auto-Read-Paper` segment to match.
+   - **Enable job:** turn ON (orange toggle).
+   - **Save responses in job history:** OFF is fine (keeps dashboard tidy).
+   - **Execution schedule → "Every day at":** pick the hour and minute you want the email to land. The right-hand "Next executions" preview should say `In this job's individual timezone (Asia/Shanghai)` — if it doesn't, go back to step 6.1 and fix the timezone. Example in the screenshot: `11:40` every day Beijing time.
+
+   **6.5 Switch to the "Advanced" tab and fill in the HTTP details** (no screenshot, but just 4 fields):
+   - **Request method:** `POST`
+   - **Request headers:** add **both** of these (use *Add header* to create a second row):
+     - Header `Authorization` = `Bearer <your github_pat_... token>` (paste the token from step 6.2; keep the word `Bearer ` before it)
+     - Header `Accept` = `application/vnd.github+json`
+   - **Request body:** `{"ref":"main"}`
+     > Do **not** set `"inputs":{"force":true}` here. Leaving `force` at its default (false) keeps the *already sent today* guard active — a stray cron-job.org retry cannot double-send.
+
+   **6.6 Click *Create* at the bottom.** The new job appears on your dashboard with *enabled cronjobs: 1*. **Done.** The cron-job.org dashboard is now the single source of truth for your send time — to reschedule, edit the job there; no repo edit is ever needed.
+
+   > **Verify it works:** on the job's detail page, click **Test run** (or *Execute now*). Within a few seconds the response panel should show `HTTP 204 No Content` — that's GitHub's signal that the workflow was dispatched successfully. Then check your GitHub repo's **Actions** tab: a new `Send paper daily` run should appear within ~10 s.
+
+   > **Need to force-resend today?** Go to GitHub **Actions → Send paper daily → Run workflow**, tick the **`force`** checkbox, and click Run. `force=true` bypasses the idempotency marker (letting you send a second time the same day for debugging) and it does **not** overwrite the day's canonical sent-marker, so the next automated run from cron-job.org will still go through normally.
 
 7. **Keep it running 365 days — nothing extra to do.** Because the daily send is triggered externally by cron-job.org (not by GitHub's `schedule:`), GitHub's **60-day idle-schedule pause** simply does not apply to this repo. No heartbeat workflow, no keep-alive commits — cron-job.org will keep POSTing regardless of how quiet the repo is.
 
