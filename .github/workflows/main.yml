@@ -2,10 +2,15 @@ name: Send paper daily
 on:
   workflow_dispatch:
   schedule:
-    # Runs every 5 minutes. The job checks SEND_HOUR_BJ + SEND_MINUTE_BJ (Beijing time)
-    # and skips unless the current Beijing time falls in the same 5-minute bucket as the target.
-    # GitHub Actions cron drift is ~5-15 min, so 5-minute precision is the practical floor.
-    - cron: '*/5 * * * *'
+    # Every 15 min during UTC 23:00–03:59 (= Beijing 07:00–11:59), a ~5h window
+    # generously surrounding the typical SEND_HOUR_BJ=9:30 target. The job then
+    # enforces a strict ±60 min window around the configured target and an
+    # idempotent "already sent today" guard, so at most one successful run per
+    # Beijing day regardless of how many times GitHub actually fires.
+    #
+    # If you change SEND_HOUR_BJ substantially (e.g. to 20:00), update the
+    # UTC hours below so the cron window still covers target ± ~1h.
+    - cron: '*/15 23,0-3 * * *'
 
 jobs:
   send-digest:
@@ -17,28 +22,56 @@ jobs:
           SEND_HOUR_BJ: ${{ vars.SEND_HOUR_BJ }}
           SEND_MINUTE_BJ: ${{ vars.SEND_MINUTE_BJ }}
         run: |
-          target_hour="${SEND_HOUR_BJ:-7}"
-          target_minute="${SEND_MINUTE_BJ:-0}"
+          target_hour="${SEND_HOUR_BJ:-9}"
+          target_minute="${SEND_MINUTE_BJ:-30}"
           current_bj_hour=$(TZ=Asia/Shanghai date +%-H)
           current_bj_minute=$(TZ=Asia/Shanghai date +%-M)
-          target_bucket=$(( target_minute / 5 * 5 ))
-          current_bucket=$(( current_bj_minute / 5 * 5 ))
-          echo "Beijing time now = ${current_bj_hour}:$(printf '%02d' "$current_bj_minute"), target = ${target_hour}:$(printf '%02d' "$target_minute") (bucket ${target_bucket}), trigger = ${{ github.event_name }}"
+          bj_date=$(TZ=Asia/Shanghai date +%Y-%m-%d)
+          target_mins=$(( target_hour * 60 + target_minute ))
+          current_mins=$(( current_bj_hour * 60 + current_bj_minute ))
+          diff=$(( current_mins - target_mins ))
+          abs_diff=${diff#-}
+          echo "bj_date=${bj_date}" >> "$GITHUB_OUTPUT"
+          echo "Beijing time now = ${current_bj_hour}:$(printf '%02d' "$current_bj_minute"), target = ${target_hour}:$(printf '%02d' "$target_minute"), |diff| = ${abs_diff} min, trigger = ${{ github.event_name }}"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          elif [ "$current_bj_hour" = "$target_hour" ] && [ "$current_bucket" = "$target_bucket" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "in_window=true" >> "$GITHUB_OUTPUT"
+          elif [ "$abs_diff" -le 60 ]; then
+            echo "in_window=true" >> "$GITHUB_OUTPUT"
           else
+            echo "in_window=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping — Beijing time outside target ±60 min window"
+          fi
+
+      # Idempotency guard: if today's Beijing-date marker already exists in the
+      # Actions cache, a prior run already sent today's digest. Skip without
+      # running the pipeline again. Marker is written after a successful send.
+      - name: Check if already sent today
+        id: sent_check
+        if: steps.schedule_check.outputs.in_window == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: state/.sent-marker
+          key: sent-marker-${{ steps.schedule_check.outputs.bj_date }}
+          lookup-only: true
+
+      - name: Decide whether to run
+        id: decide
+        run: |
+          if [ "${{ steps.schedule_check.outputs.in_window }}" != "true" ]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping — Beijing ${current_bj_hour}:$(printf '%02d' "$current_bj_minute") not in target bucket ${target_hour}:$(printf '%02d' "$target_bucket")"
+          elif [ "${{ steps.sent_check.outputs.cache-hit }}" = "true" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping — already sent for Beijing date ${{ steps.schedule_check.outputs.bj_date }}"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout
-        if: steps.schedule_check.outputs.run == 'true'
+        if: steps.decide.outputs.run == 'true'
         uses: actions/checkout@v6
 
       - name: Setup uv
-        if: steps.schedule_check.outputs.run == 'true'
+        if: steps.decide.outputs.run == 'true'
         uses: astral-sh/setup-uv@v7
 
       # Rolling score history is persisted per-fork via actions/cache, not
@@ -46,7 +79,7 @@ jobs:
       # never leaks its scored papers to downstream forks) and avoids bloating
       # the repo with one commit per run.
       - name: Restore rolling score history
-        if: steps.schedule_check.outputs.run == 'true'
+        if: steps.decide.outputs.run == 'true'
         uses: actions/cache/restore@v4
         with:
           path: state/score_history.json
@@ -55,7 +88,7 @@ jobs:
             score-history-
 
       - name: Run script
-        if: steps.schedule_check.outputs.run == 'true'
+        if: steps.decide.outputs.run == 'true'
         env:
           SENDER: ${{ secrets.SENDER }}
           RECEIVER: ${{ secrets.RECEIVER }}
@@ -87,8 +120,25 @@ jobs:
           uv run src/auto_read_paper/main.py
 
       - name: Save rolling score history
-        if: steps.schedule_check.outputs.run == 'true' && success()
+        if: steps.decide.outputs.run == 'true' && success()
         uses: actions/cache/save@v4
         with:
           path: state/score_history.json
           key: score-history-${{ github.run_id }}
+
+      # Mark today's Beijing date as sent so later triggers on the same day
+      # short-circuit at the idempotency guard above. Cache entries are immutable
+      # by key, so we only write once per Beijing date.
+      - name: Write sent marker
+        if: steps.decide.outputs.run == 'true' && success() && steps.sent_check.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p state
+          TZ=Asia/Shanghai date --iso-8601=seconds > state/.sent-marker
+          echo "Wrote state/.sent-marker for Beijing date ${{ steps.schedule_check.outputs.bj_date }}"
+
+      - name: Save sent marker
+        if: steps.decide.outputs.run == 'true' && success() && steps.sent_check.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: state/.sent-marker
+          key: sent-marker-${{ steps.schedule_check.outputs.bj_date }}

@@ -139,8 +139,8 @@ High-scoring papers are **never buried**:
 
    | Variable | Description | Example |
    | :--- | :--- | :--- |
-   | `SEND_HOUR_BJ` | Beijing hour (0-23) at which the daily email is sent. Default `7`. | `7` |
-   | `SEND_MINUTE_BJ` | Beijing minute (0-59). Optional, default `0`. Rounded down to the nearest 5-minute bucket — GitHub cron drifts ~5-15 min so finer precision isn't realistic. | `30` |
+   | `SEND_HOUR_BJ` | Beijing hour (0-23) at which the daily email is sent. Default `9`. **Must fall inside the cron window defined in [`.github/workflows/main.yml`](.github/workflows/main.yml) — by default Beijing 07:00–11:59. If you want a target outside this window (e.g. 20:00), also edit the UTC `cron:` line in the workflow so it covers `target ± 1h`.** | `9` |
+   | `SEND_MINUTE_BJ` | Beijing minute (0-59). Optional, default `30`. The job enforces a ±60 min window around `SEND_HOUR_BJ:SEND_MINUTE_BJ` and uses an idempotent "already sent today" guard, so at most one email is sent per Beijing day even though GitHub may fire the cron many times. | `30` |
    | `OPENAI_MODEL` | LLM model id used for both scoring and the deep-read summary. Any model your `OPENAI_API_BASE` provider serves. Default `gpt-4o-mini`. | `gpt-4o-mini`, `deepseek-chat`, `Qwen/Qwen2.5-72B-Instruct` |
    | `OPENAI_MAX_TOKENS` | Per-request output token cap. Default `4096`. **Must be ≤ your model's context window** — many OpenAI-compatible providers cap at `8192` (DeepSeek, some Qwen tiers). Setting this too high yields `400 Invalid max_tokens value`. | `4096`, `8192` |
    | `CUSTOM_CONFIG` | The full YAML configuration (see below). **Must be edited to match your own research keywords / categories / language — not optional.** | *(multi-line YAML)* |
@@ -205,7 +205,7 @@ High-scoring papers are **never buried**:
 5. **Once `Test` passes, manually trigger `Send paper daily` for a live dry-run.** Check the workflow log and your inbox.
    ![trigger](./assets/trigger.png)
 
-   After this manual run, the workflow also runs automatically — the job wakes up every 5 minutes, but only sends an email when the **Beijing time matches `SEND_HOUR_BJ`:`SEND_MINUTE_BJ`** (default 07:00 Beijing time, rounded down to a 5-minute bucket). Change the variables anytime to reschedule; no YAML edit needed.
+   After this manual run, the workflow also runs automatically. The cron is scoped to a ~5h UTC window corresponding to **Beijing 07:00–11:59** and fires every 15 minutes inside it (≈20 attempts per day). Each attempt short-circuits unless **current Beijing time is within ±60 minutes of `SEND_HOUR_BJ`:`SEND_MINUTE_BJ`** (default 09:30) and today's email has not yet been sent — so at most one email per Beijing day, no matter how many times GitHub actually fires. Change `SEND_HOUR_BJ` / `SEND_MINUTE_BJ` anytime to reschedule within the default window; **only if you move the target outside 07:00–11:59 Beijing time do you also need to edit the UTC `cron:` line in [`.github/workflows/main.yml`](.github/workflows/main.yml)** so the window still covers `target ± 1h`.
 
 6. **Keep it running 365 days.** Two GitHub-side issues can silently kill the daily digest; both are handled by default, but you should know what's happening:
 
