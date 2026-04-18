@@ -422,24 +422,6 @@ arXiv RSS → keyword filter → multi-agent rerank → history merge → Top-N 
 
 ---
 
-## 📃 License
-
-Distributed under the AGPLv3 License. See `LICENSE` for detail.
-
-## ❤️ Acknowledgement
-
-This project stands on the shoulders of two open-source projects:
-
-- [**TideDra/zotero-arxiv-daily**](https://github.com/TideDra/zotero-arxiv-daily) — the GitHub Actions + SMTP + HTML email foundation that this repo forks and extends.
-- [**ReadPaperEveryday**](https://github.com/) — inspired the keyword-based arXiv workflow and Chinese deep-read summarization style.
-
-Additional thanks to:
-- [arxiv](https://github.com/lukasschwab/arxiv.py)
-- [trafilatura](https://github.com/adbar/trafilatura)
-- [pymupdf4llm](https://github.com/pymupdf/PyMuPDF)
-
----
-
 ## 🗑️ Manually clear the 7-day paper history
 
 Your fork accumulates a rolling 7-day memory so high-scoring papers aren't buried. The pipeline stores it in **two places**:
@@ -520,3 +502,21 @@ Next local run starts fresh.
 | Paper→sent_at marks | Your PAT / SMTP auth code |
 
 After wiping, the very next run may re-surface papers you already saw earlier in the week (because they're no longer in the "already scored" set). That's expected — it's the cost of a full reset.
+
+---
+
+## 📃 License
+
+Distributed under the AGPLv3 License. See `LICENSE` for detail.
+
+## ❤️ Acknowledgement
+
+This project stands on the shoulders of two open-source projects:
+
+- [**TideDra/zotero-arxiv-daily**](https://github.com/TideDra/zotero-arxiv-daily) — the GitHub Actions + SMTP + HTML email foundation that this repo forks and extends.
+- [**ReadPaperEveryday**](https://github.com/) — inspired the keyword-based arXiv workflow and Chinese deep-read summarization style.
+
+Additional thanks to:
+- [arxiv](https://github.com/lukasschwab/arxiv.py)
+- [trafilatura](https://github.com/adbar/trafilatura)
+- [pymupdf4llm](https://github.com/pymupdf/PyMuPDF)
