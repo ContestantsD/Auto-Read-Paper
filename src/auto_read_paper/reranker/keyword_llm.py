@@ -166,6 +166,24 @@ class KeywordLLMReranker(BaseReranker):
                     logger.warning(f"Scoring worker raised: {e}")
                     scored[i] = (candidates[i], None)
 
+        # Scale-rescue: if EVERY parsed score sits in [0, 1] the model
+        # almost certainly misread the 0-10 rubric as 0-1 (e.g. returned
+        # {"innovation": 0.8, ...}). Rescale ×10 so the email doesn't
+        # show "Relevance 1.0" for every paper. Require >=2 rated papers
+        # so a single low-scored paper doesn't trigger the rescale.
+        parsed_scores = [s for _, s in scored if s is not None]
+        if len(parsed_scores) >= 2 and all(
+            max(s["innovation"], s["relevance"], s["potential"]) <= 1.0
+            for s in parsed_scores
+        ):
+            logger.warning(
+                "Every LLM score landed in [0, 1] — the model likely "
+                "misread the 0-10 rubric as 0-1. Rescaling x10."
+            )
+            for s in parsed_scores:
+                for k in ("innovation", "relevance", "potential"):
+                    s[k] = round(s[k] * 10.0, 2)
+
         results: list[Paper] = []
         for paper, s in scored:
             if s is None:

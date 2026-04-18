@@ -110,7 +110,24 @@ def _parse_reviewer_json(content: str, expected_ids: set[int]) -> list[dict] | N
             "score": max(0.0, min(10.0, score)),
             "reason": str(item.get("reason", ""))[:300],
         })
-    return cleaned or None
+    if not cleaned:
+        return None
+
+    # Scale-rescue: some smaller LLMs silently treat the 0-10 rubric as a
+    # 0-1 probability and return scores like 0.7 / 0.9 / 1.0 across the
+    # whole batch. That surfaces in the email as every paper showing
+    # "Relevance 1.0" (after rounding). If the WHOLE batch sits in [0, 1],
+    # multiply back up to the intended 0-10 scale. We require >=2 papers
+    # to avoid accidentally rescaling a single low-rated paper.
+    if len(cleaned) >= 2 and all(c["score"] <= 1.0 for c in cleaned):
+        logger.warning(
+            "Reviewer returned every score in [0, 1] — the model likely "
+            "misread the 0-10 rubric as 0-1. Rescaling x10 so the ranking "
+            "is still usable."
+        )
+        for c in cleaned:
+            c["score"] = round(c["score"] * 10.0, 2)
+    return cleaned
 
 
 @register_reranker("reader_reviewer")
@@ -263,11 +280,25 @@ class ReaderReviewerReranker(BaseReranker):
         logger.info(f"Reviewer agent: ranking {len(paper_notes)} papers in one batch call...")
         rankings = self._review_batch(paper_notes)
         if rankings is None:
-            logger.warning(
-                "Reviewer failed; falling back to keyword-hit count for ordering."
+            # Loud warning because the visible symptom (every paper showing
+            # the same low "Relevance" score in the email) is confusing.
+            logger.error(
+                "Reviewer LLM call failed or returned unparseable JSON. "
+                "Falling back to keyword-hit count, projected onto the 0-10 "
+                "scale so the email doesn't show 'Relevance 1.0' for every "
+                "paper. The underlying LLM issue still needs fixing — "
+                "check the model / base_url / max_tokens / rate-limit."
             )
-            for p in candidates:
-                p.score = float(count_keyword_hits(p, self.keywords))
+            hits = [count_keyword_hits(p, self.keywords) for p in candidates]
+            max_hits = max(hits) if hits else 0
+            for p, h in zip(candidates, hits):
+                if max_hits > 0:
+                    # Spread 2.0 (baseline) → 8.0 (best) so the UI clearly
+                    # signals "these are degraded scores" without collapsing
+                    # every paper to the same number.
+                    p.score = round(2.0 + (h / max_hits) * 6.0, 1)
+                else:
+                    p.score = 2.0
             ranked = sorted(candidates, key=lambda p: p.score or 0.0, reverse=True)
             return ranked
 

@@ -83,8 +83,14 @@ jobs:
           awk '/^source:/{s=1} s && /^[^ ]/ && !/^source:/{s=0} s' config/custom.yaml | sed -n '/keywords:/,/^[^ ]/p' || true
           uv run src/auto_read_paper/main.py
 
+      # `if: always()` — save the cache even if the previous step errored.
+      # Critical: executor.py persists the content-hash BEFORE calling SMTP,
+      # so if the step fails after delivery (transient error, runner killed)
+      # the hash is already on disk. Without this guard the cache save was
+      # skipped and the next run re-sent the same email — the exact
+      # "duplicate email at the same time" symptom this defends against.
       - name: Save rolling score history
-        if: success()
+        if: always()
         uses: actions/cache/save@v4
         with:
           path: state/score_history.json

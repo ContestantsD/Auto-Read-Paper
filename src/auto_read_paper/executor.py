@@ -174,13 +174,23 @@ class Executor:
                 f"({content_hash[:12]}...) as last send."
             )
 
+        # Persist the content hash BEFORE calling SMTP. This is the strongest
+        # defense against "same-time duplicate" deliveries: if the runner is
+        # killed, SMTP raises after partial delivery, or the cache-save step
+        # later skips, the hash is already on disk — the next overlapping run
+        # loads it via is_duplicate_of_last_send() and short-circuits.
+        # Papers themselves are only marked sent AFTER SMTP succeeds, so a
+        # genuine SMTP failure keeps them in the unsent pool for tomorrow.
+        # Content-hash dedup still blocks a re-send of the SAME HTML; use
+        # SKIP_DEDUP=1 to force one when you know the first send never landed.
+        if self.history is not None:
+            self.history.record_sent_email(content_hash, today)
+            self.history.save()
+
         logger.info("Sending email...")
         send_email(self.config, email_content, content_hash=content_hash)
         logger.info("Email sent successfully")
 
-        # Only mark as sent AFTER SMTP succeeds — if the send fails, the papers
-        # stay in the unsent pool and get another shot tomorrow.
         if self.history is not None:
-            self.history.record_sent_email(content_hash, today)
             self.history.mark_sent(top_papers, today)
             self.history.save()

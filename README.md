@@ -437,3 +437,86 @@ Additional thanks to:
 - [arxiv](https://github.com/lukasschwab/arxiv.py)
 - [trafilatura](https://github.com/adbar/trafilatura)
 - [pymupdf4llm](https://github.com/pymupdf/PyMuPDF)
+
+---
+
+## 🗑️ Manually clear the 7-day paper history
+
+Your fork accumulates a rolling 7-day memory so high-scoring papers aren't buried. The pipeline stores it in **two places**:
+
+| Where | What lives there | Scope |
+| :--- | :--- | :--- |
+| **GitHub Actions cache** (`score-history-*`) | `state/score_history.json` — scored papers + `last_sent_email` content-hash | Every cloud run |
+| **Local repo** (`state/score_history.json`) | Same file, when you run `uv run src/auto_read_paper/main.py` on your machine | Local dev only |
+
+You may want to wipe one or both when:
+- You changed `keywords` / `category` / `language` and want the next run to start from a clean slate
+- You keep getting `Skipping duplicate send — identical email already sent …` and know the previous email never actually arrived (bad SMTP, spam folder, etc.) — wiping the cache removes the `last_sent_email` hash so the next trigger sends unconditionally
+- The history file got corrupted for any reason
+
+Note: clearing history does **not** block future multi-per-day sends. The dedup key is the email's content hash, not the date — trigger the workflow as many times as you want per day; only bit-identical digests are skipped.
+
+### Option A — GitHub web UI (easiest, recommended)
+
+1. Open your fork → **Actions** tab
+2. Left sidebar → **Caches** (under "Management")
+3. Find every entry whose key starts with `score-history-` and click the 🗑️ icon to delete
+4. The next `Send paper daily` run starts with an empty history and no `last_sent_email` hash
+
+![If you don't see a Caches link, scroll the sidebar — it's below the workflow list.]
+
+### Option B — GitHub CLI (scripted / bulk)
+
+```bash
+# list every score-history cache key on your fork
+gh cache list --repo <your-user>/Auto-Read-Paper --key score-history-
+
+# delete them all in one shot
+gh cache list --repo <your-user>/Auto-Read-Paper --key score-history- \
+    --json id --jq '.[].id' \
+  | xargs -r -I {} gh cache delete {} --repo <your-user>/Auto-Read-Paper
+```
+
+Replace `<your-user>` with your GitHub username. Requires `gh auth login` once.
+
+### Option C — GitHub REST API (no CLI needed)
+
+```bash
+# Needs a fine-grained PAT with Actions: Read and write (same one cron-job.org uses)
+TOKEN=github_pat_xxx
+OWNER=<your-user>
+REPO=Auto-Read-Paper
+
+# 1. List cache ids whose key starts with score-history-
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://api.github.com/repos/$OWNER/$REPO/actions/caches?key=score-history-&per_page=100" \
+  | jq -r '.actions_caches[].id'
+
+# 2. Delete each id
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "https://api.github.com/repos/$OWNER/$REPO/actions/caches/<cache-id>"
+```
+
+### Option D — local dev (uv run)
+
+If you're running the pipeline on your own machine, the history file is just a plain JSON file:
+
+```bash
+# nuke everything (papers + last_sent_email hash)
+rm state/score_history.json
+
+# OR keep the file but reset it to empty
+printf '{"papers": []}\n' > state/score_history.json
+```
+
+Next local run starts fresh.
+
+### What gets wiped vs kept
+
+| Wiped | Kept |
+| :--- | :--- |
+| List of scored papers from the last 7 days | Your Secrets / Variables / `CUSTOM_CONFIG` |
+| `last_sent_email` hash (the duplicate-send guard) | Your cron-job.org schedule |
+| Paper→sent_at marks | Your PAT / SMTP auth code |
+
+After wiping, the very next run may re-surface papers you already saw earlier in the week (because they're no longer in the "already scored" set). That's expected — it's the cost of a full reset.
