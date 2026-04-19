@@ -460,22 +460,21 @@ Your fork accumulates a rolling 7-day memory so high-scoring papers aren't burie
 
 | Where | What lives there | Scope |
 | :--- | :--- | :--- |
-| **GitHub Actions cache** (`score-history-*`) | `state/score_history.json` — scored papers + `last_sent_email` content-hash | Every cloud run |
+| **GitHub Actions cache** (`score-history-*`) | `state/score_history.json` — scored papers + `sent_at` marks | Every cloud run |
 | **Local repo** (`state/score_history.json`) | Same file, when you run `uv run src/auto_read_paper/main.py` on your machine | Local dev only |
 
 You may want to wipe one or both when:
 - You changed `keywords` / `category` / `language` and want the next run to start from a clean slate
-- You keep getting `Skipping duplicate send — identical email already sent …` and know the previous email never actually arrived (bad SMTP, spam folder, etc.) — wiping the cache removes the `last_sent_email` hash so the next trigger sends unconditionally
 - The history file got corrupted for any reason
 
-Note: clearing history does **not** block future multi-per-day sends. The dedup key is the email's content hash, not the date — trigger the workflow as many times as you want per day; only bit-identical digests are skipped.
+Note: there is no per-day or content-hash send guard. The candidate pool is just unsent papers — trigger the workflow as many times as you want per day; each push only ever picks from papers you have not yet received, and the pool naturally shrinks as papers get marked sent.
 
 ### Option A — GitHub web UI (easiest, recommended)
 
 1. Open your fork → **Actions** tab
 2. Left sidebar → **Caches** (under "Management")
 3. Find every entry whose key starts with `score-history-` and click the 🗑️ icon to delete
-4. The next `Send paper daily` run starts with an empty history and no `last_sent_email` hash
+4. The next `Send paper daily` run starts with an empty history
 
 ![If you don't see a Caches link, scroll the sidebar — it's below the workflow list.]
 
@@ -516,7 +515,7 @@ curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
 If you're running the pipeline on your own machine, the history file is just a plain JSON file:
 
 ```bash
-# nuke everything (papers + last_sent_email hash)
+# nuke everything (papers + sent marks)
 rm state/score_history.json
 
 # OR keep the file but reset it to empty
@@ -530,8 +529,8 @@ Next local run starts fresh.
 | Wiped | Kept |
 | :--- | :--- |
 | List of scored papers from the last 7 days | Your Secrets / Variables / `CUSTOM_CONFIG` |
-| `last_sent_email` hash (the duplicate-send guard) | Your cron-job.org schedule |
-| Paper→sent_at marks | Your PAT / SMTP auth code |
+| Paper→sent_at marks | Your cron-job.org schedule |
+|  | Your PAT / SMTP auth code |
 
 After wiping, the very next run may re-surface papers you already saw earlier in the week (because they're no longer in the "already scored" set). That's expected — it's the cost of a full reset.
 

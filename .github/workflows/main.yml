@@ -14,11 +14,6 @@ name: Send paper daily
 
 on:
   workflow_dispatch:
-    inputs:
-      skip_dedup:
-        description: "Force a send even if the rendered email is identical to the previous one (bypasses content-hash dedup). Leave unchecked for normal runs; only useful when re-testing SMTP/template with the same candidate pool."
-        type: boolean
-        default: false
 
 # Belt and suspenders: only one run of this workflow can be active at a time.
 # If a second trigger fires while one is running, the new one queues behind
@@ -68,7 +63,6 @@ jobs:
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           OPENAI_MAX_TOKENS: ${{ vars.OPENAI_MAX_TOKENS }}
           CUSTOM_CONFIG: ${{ vars.CUSTOM_CONFIG }}
-          SKIP_DEDUP: ${{ inputs.skip_dedup && '1' || '' }}
         run: |
           # GitHub Actions sets env vars for missing secrets to the EMPTY
           # STRING, not unset. OmegaConf's ${oc.env:LLM_API_KEY,fallback}
@@ -114,11 +108,10 @@ jobs:
           uv run src/auto_read_paper/main.py
 
       # `if: always()` — save the cache even if the previous step errored.
-      # Critical: executor.py persists the content-hash BEFORE calling SMTP,
-      # so if the step fails after delivery (transient error, runner killed)
-      # the hash is already on disk. Without this guard the cache save was
-      # skipped and the next run re-sent the same email — the exact
-      # "duplicate email at the same time" symptom this defends against.
+      # Critical: executor.py marks papers as sent only AFTER SMTP succeeds,
+      # but if the runner is killed between SMTP and this step, anything that
+      # actually shipped must still be persisted as sent — otherwise the next
+      # run would re-pick the same papers from the unsent pool.
       - name: Save rolling score history
         if: always()
         uses: actions/cache/save@v5

@@ -144,7 +144,7 @@ def glob_match(path:str, pattern:str) -> bool:
     re_pattern = glob.translate(pattern,recursive=True)
     return re.match(re_pattern, path) is not None
 
-def send_email(config: DictConfig, html: str, content_hash: str | None = None):
+def send_email(config: DictConfig, html: str):
     sender = config.email.sender
     receiver = config.email.receiver
     password = config.email.sender_password
@@ -166,16 +166,6 @@ def send_email(config: DictConfig, html: str, content_hash: str | None = None):
     msg['To'] = _format_addr('You <%s>' % receiver)
     today = datetime.datetime.now().strftime('%Y/%m/%d')
     msg['Subject'] = Header(f'Daily arXiv {today}', 'utf-8').encode()
-
-    # Deterministic Message-ID from content hash (when provided). If an
-    # upstream retry somehow submits the same mail twice, receiving servers
-    # that honor RFC 5321 dedup will collapse them to a single inbox entry.
-    if content_hash:
-        try:
-            sender_domain = sender.split("@", 1)[1]
-        except IndexError:
-            sender_domain = "auto-read-paper.local"
-        msg['Message-ID'] = f"<{content_hash}@{sender_domain}>"
 
     # Choose SMTP transport by port instead of the legacy try-TLS-then-fallback
     # chain, which used to leave stray connections behind when the first

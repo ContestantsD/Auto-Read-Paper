@@ -1,6 +1,3 @@
-import hashlib
-import os
-
 from loguru import logger
 from omegaconf import DictConfig
 from .retriever import get_retriever_cls
@@ -69,6 +66,10 @@ class Executor:
             scored_today = self.reranker.rerank(all_papers, [])
 
         # Record today's scores, then merge with unsent history into the candidate pool.
+        # unsent_papers() never includes papers already sent on ANY day — each push
+        # therefore only ever considers papers the user has not yet received. No
+        # filler from sent_papers(), no content-hash dedup: multi-push-per-day is
+        # a side-effect of the pool naturally shrinking as papers get marked sent.
         if self.history is not None:
             self.history.record_newly_scored(scored_today, today)
             pool = self.history.unsent_papers()
@@ -83,35 +84,11 @@ class Executor:
         max_n = max(0, int(self.config.executor.max_paper_num))
         top_papers = pool[:max_n]
 
-        # Fallback so the daily email is never empty: if we don't have enough
-        # unsent/fresh papers, pad with previously-sent entries from history
-        # (highest-scoring first). This guarantees the pipeline produces a
-        # visible heartbeat every day even on quiet days.
-        #
-        # Critical for multi-push-per-day users: we EXCLUDE papers sent today
-        # so the 2nd/3rd trigger within the same calendar day rotates to
-        # different historical papers. Without this, each same-day trigger
-        # would refill with exactly the batch we just sent → identical
-        # content hash → dedup short-circuits the SMTP call and the user
-        # never receives the second email.
-        if len(top_papers) < max_n and self.history is not None:
-            already_ids = {getattr(p, "url", None) for p in top_papers}
-            filler_pool = [
-                p for p in self.history.sent_papers(exclude_sent_on=today)
-                if getattr(p, "url", None) not in already_ids
-            ]
-            filler_pool.sort(key=lambda p: p.score or 0.0, reverse=True)
-            needed = max_n - len(top_papers)
-            filler = filler_pool[:needed]
-            if filler:
-                logger.info(
-                    f"Padding email with {len(filler)} previously-sent paper(s) "
-                    f"as fallback (primary pool had only {len(top_papers)})"
-                )
-                top_papers.extend(filler)
-
-        # Last-resort fallback: still nothing (e.g. first run with empty history on a
-        # quiet day). Pull a few recent arXiv papers so the pipeline proves it's alive.
+        # Last-resort heartbeat: if even the unsent pool is empty (first run,
+        # very quiet day, or the user already consumed everything in previous
+        # pushes today), pull a few recent arXiv papers so the pipeline still
+        # produces a visible signal. These are scored and recorded as newly-
+        # scored entries, NOT pulled from already-sent history.
         if not top_papers:
             arxiv_retriever = self.retrievers.get("arxiv")
             if arxiv_retriever is not None and hasattr(arxiv_retriever, "retrieve_fallback_papers"):
@@ -121,8 +98,15 @@ class Executor:
                 except Exception as exc:
                     logger.warning(f"Heartbeat fallback failed: {exc}")
                     fb = []
+                # Skip anything we've already sent so the heartbeat never
+                # re-shows an old paper.
+                if fb and self.history is not None:
+                    sent_ids = {
+                        e.get("id") for e in self.history.entries if e.get("sent_at")
+                    }
+                    from .history import _paper_id
+                    fb = [p for p in fb if _paper_id(p) not in sent_ids]
                 if fb:
-                    # Score them so the email still shows a ranked number.
                     logger.info(f"Scoring {len(fb)} heartbeat papers")
                     fb = self.reranker.rerank(fb, [])
                     fb.sort(key=lambda p: p.score or 0.0, reverse=True)
@@ -131,7 +115,7 @@ class Executor:
                         self.history.record_newly_scored(top_papers, today)
 
         if not top_papers and not self.config.executor.send_empty:
-            logger.info("No papers in pool even after fallback. No email will be sent.")
+            logger.info("No unsent papers available — no email will be sent.")
             if self.history is not None:
                 self.history.save()
             return
@@ -140,8 +124,6 @@ class Executor:
             logger.info(f"Generating deep summaries for top {len(top_papers)} papers...")
             lang = str(self.config.llm.get("language", "Chinese"))
             for p in tqdm(top_papers):
-                # Skip re-generating tldr for previously-rendered fillers that
-                # already have it from a past run — saves tokens.
                 if not p.tldr:
                     p.generate_tldr(self.llm, lang)
                 if not p.affiliations:
@@ -151,51 +133,12 @@ class Executor:
 
         lang = str(self.config.llm.get("language", "Chinese"))
         email_content = render_email(top_papers, lang)
-        content_hash = hashlib.sha256(email_content.encode("utf-8")).hexdigest()
 
-        # Content-hash dedup. If the last successfully-sent email hashes to the
-        # same value, this is a duplicate trigger — skip the SMTP send. Catches
-        # overlapping workflow runs, stale cache restores, and mail-provider
-        # replays. Hash covers every visible paper + summary, so a genuine new
-        # candidate pool always differs and goes through.
-        #
-        # Escape hatch: set SKIP_DEDUP=1 to bypass (useful when re-sending the
-        # same content for SMTP / rendering / template testing).
-        skip_dedup = os.environ.get("SKIP_DEDUP", "").strip().lower() in ("1", "true", "yes")
-        if (
-            not skip_dedup
-            and self.history is not None
-            and self.history.is_duplicate_of_last_send(content_hash)
-        ):
-            last = self.history.last_sent_email
-            logger.warning(
-                f"Skipping duplicate send — identical email already sent on "
-                f"{last.get('date')} (hash {content_hash[:12]}...). "
-                f"This typically means two triggers fired for the same candidate "
-                f"pool. Set SKIP_DEDUP=1 to force resend for debugging."
-            )
-            return
-        if skip_dedup and self.history is not None and self.history.is_duplicate_of_last_send(content_hash):
-            logger.warning(
-                f"SKIP_DEDUP=1 set — sending despite identical-content hash "
-                f"({content_hash[:12]}...) as last send."
-            )
-
-        # Persist the content hash BEFORE calling SMTP. This is the strongest
-        # defense against "same-time duplicate" deliveries: if the runner is
-        # killed, SMTP raises after partial delivery, or the cache-save step
-        # later skips, the hash is already on disk — the next overlapping run
-        # loads it via is_duplicate_of_last_send() and short-circuits.
-        # Papers themselves are only marked sent AFTER SMTP succeeds, so a
-        # genuine SMTP failure keeps them in the unsent pool for tomorrow.
-        # Content-hash dedup still blocks a re-send of the SAME HTML; use
-        # SKIP_DEDUP=1 to force one when you know the first send never landed.
         if self.history is not None:
-            self.history.record_sent_email(content_hash, today)
             self.history.save()
 
         logger.info("Sending email...")
-        send_email(self.config, email_content, content_hash=content_hash)
+        send_email(self.config, email_content)
         logger.info("Email sent successfully")
 
         if self.history is not None:
